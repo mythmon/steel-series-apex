@@ -60,33 +60,27 @@ where
     }
 
     fn send(&self, cmd: KeyboardCommand, buf: &[u8]) -> Result<()> {
-        let mut handle = self.dev.open().context("Opening USB device for keyboard")?;
+        // Hopefully this is constant?
         const INTERFACE_NUM: u8 = 1;
+        // What does this mean?
+        const REQUEST: u8 = 0x09;
+
+        let mut handle = self.dev.open().context("Opening USB device for keyboard")?;
         handle
             .set_auto_detach_kernel_driver(true)
             .context("settings auto-detach kernel driver")?;
 
-        let dev_desc = self.dev.device_descriptor()?;
-        for config_num in 0..(dev_desc.num_configurations()) {
-            let config_desc = self.dev.config_descriptor(config_num)?;
-            for iface_num in 0..(config_desc.num_interfaces()) {
-                handle.claim_interface(iface_num).context(format!(
-                    "claiming config {}/{}, interface {}/{}",
-                    config_num,
-                    dev_desc.num_configurations(),
-                    iface_num,
-                    config_desc.num_interfaces(),
-                ))?;
-            }
-        }
+        handle
+            .claim_interface(INTERFACE_NUM)
+            .context("claiming interface")?;
 
         let request_type = rusb::request_type(
             rusb::Direction::Out,
             rusb::RequestType::Class,
             rusb::Recipient::Interface,
         );
-        assert_eq!(request_type, 0x21);
-        let request = 0x09; // what does this mean?
+        // 0x21 is what works.
+        debug_assert_eq!(request_type, 0x21);
         let mut remaining_bytes = buf.len();
 
         let timeout = Duration::from_secs(5);
@@ -94,7 +88,7 @@ where
         let bytes_written = handle
             .write_control(
                 request_type,
-                request,
+                REQUEST,
                 cmd.value(),
                 cmd.index(),
                 buf,

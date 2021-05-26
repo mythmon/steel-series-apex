@@ -9,15 +9,15 @@ use embedded_graphics::{
     drawable::Drawable,
     fonts::{Font12x16, Font24x32, Text},
     pixelcolor::BinaryColor,
-    prelude::{Point, Primitive},
+    prelude::{Point, Primitive, Size},
     primitives::{Circle, Rectangle},
     style::{PrimitiveStyle, TextStyle},
 };
-use keyboard::{ApexProTkl, KeyboardDevice};
+use keyboard::KeyboardDevice;
 use rusb::{Context, Hotplug, UsbContext};
 use tracing_subscriber::EnvFilter;
 
-use crate::keyboard::KeyboardType;
+use crate::keyboard::KeyboardInfo;
 
 fn main() -> Result<()> {
     ensure!(rusb::has_hotplug(), "No hotplug functionality available");
@@ -31,9 +31,13 @@ fn main() -> Result<()> {
     tracing::subscriber::set_global_default(subscriber)?;
 
     let context = rusb::Context::new()?;
-    type Keyboard = ApexProTkl;
+    let keyboard_info = KeyboardInfo {
+        vendor_id: 0x1038,
+        product_id: 0x1614,
+        screen_size: Size::new(128, 40),
+    };
 
-    let mut keyboard = KeyboardDevice::<Keyboard, _>::new(&context)?;
+    let mut keyboard = KeyboardDevice::new(&context, keyboard_info)?;
 
     Text::new(
         hostname::get()?
@@ -46,10 +50,10 @@ fn main() -> Result<()> {
 
     keyboard.flush_screen()?;
 
-    let watcher = Box::new(KeyboardWatcher);
+    let watcher = Box::new(KeyboardWatcher { keyboard_info });
     let _reg = context.register_callback(
-        Some(Keyboard::VENDOR_ID),
-        Some(Keyboard::PRODUCT_ID),
+        Some(keyboard_info.product_id),
+        Some(keyboard_info.vendor_id),
         None,
         watcher,
     )?;
@@ -61,7 +65,9 @@ fn main() -> Result<()> {
 }
 
 #[derive(Debug)]
-struct KeyboardWatcher;
+struct KeyboardWatcher {
+    keyboard_info: KeyboardInfo,
+}
 
 impl<C: UsbContext> Hotplug<C> for KeyboardWatcher {
     #[tracing::instrument]
@@ -72,7 +78,7 @@ impl<C: UsbContext> Hotplug<C> for KeyboardWatcher {
             // the device is marked as busy during this callback. Ideally we'd send a signal to asynchronously
             let context = rusb::Context::new()?;
             let mut keyboard =
-                KeyboardDevice::<ApexProTkl, _>::new(&context).context("getting kb")?;
+                KeyboardDevice::new(&context, self.keyboard_info).context("getting kb")?;
 
             Text::new(
                 hostname::get()?

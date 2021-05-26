@@ -6,26 +6,24 @@ use bitvec::{order, prelude::BitVec, slice::BitSlice};
 use embedded_graphics::{
     drawable::Pixel, geometry::Point, pixelcolor::BinaryColor, prelude::Size, DrawTarget,
 };
-use rusb::{Device, UsbContext};
+use rusb::{Device, DeviceDescriptor, Language, UsbContext};
 use tracing::warn;
 
-pub struct KeyboardDevice<K, C>
+pub struct KeyboardDevice<C>
 where
-    K: KeyboardType,
     C: UsbContext,
 {
     dev: Device<C>,
     frame_buffer: BitVec<Msb0, u8>,
+    keyboard_info: KeyboardInfo,
     screen_dirty: bool,
-    _keyboard_type: PhantomData<K>,
 }
 
-impl<K, C> KeyboardDevice<K, C>
+impl<C> KeyboardDevice<C>
 where
-    K: KeyboardType,
     C: UsbContext,
 {
-    pub fn new(context: &C) -> Result<Self> {
+    pub fn new(context: &C, keyboard_info: KeyboardInfo) -> Result<Self> {
         let dev = context
             .devices()
             .context("Getting list of devices")?
@@ -34,7 +32,7 @@ where
                 let desc = dev
                     .device_descriptor()
                     .context("getting device description")?;
-                if desc.product_id() == K::PRODUCT_ID && desc.vendor_id() == K::VENDOR_ID {
+                if keyboard_info.matches(&desc) {
                     Ok(Some(dev))
                 } else {
                     Ok(None)
@@ -50,19 +48,15 @@ where
             .next()
             .ok_or_else(|| anyhow!("Could not find keyboard"))?;
 
-        let mut frame_buffer = BitVec::with_capacity(Self::screen_area());
-        frame_buffer.resize(Self::screen_area(), false);
+        // Initialize the frame buffer as an empty empty screen
+        let frame_buffer = bitvec![Msb0, u8; 0; keyboard_info.screen_area()];
 
         Ok(Self {
             dev,
-            _keyboard_type: PhantomData::default(),
             frame_buffer,
+            keyboard_info,
             screen_dirty: true,
         })
-    }
-
-    pub fn screen_area() -> usize {
-        (K::OLED_SIZE.width * K::OLED_SIZE.height) as usize
     }
 
     fn send(&self, cmd: KeyboardCommand, buf: &[u8]) -> Result<()> {
@@ -132,13 +126,12 @@ where
     }
 }
 
-impl<K, C> fmt::Debug for KeyboardDevice<K, C>
+impl<C> fmt::Debug for KeyboardDevice<C>
 where
-    K: KeyboardType,
     C: UsbContext,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        K::fmt_debug(f)
+        write!(f, "{:?}", self.keyboard_info)
     }
 }
 
@@ -171,38 +164,22 @@ impl KeyboardCommand {
     }
 }
 
-pub trait KeyboardType {
-    const VENDOR_ID: u16;
-    const PRODUCT_ID: u16;
-    const OLED_SIZE: Size;
-
-    fn fmt_debug(f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:x?}:{:x?}", Self::VENDOR_ID, Self::PRODUCT_ID)
-    }
+#[derive(Debug, Clone, Copy)]
+pub struct KeyboardInfo {
+    pub vendor_id: u16,
+    pub product_id: u16,
+    pub screen_size: Size,
 }
 
-#[derive(Clone, Copy)]
-pub struct ApexProTkl;
-
-impl KeyboardType for ApexProTkl {
-    const VENDOR_ID: u16 = 0x1038;
-    const PRODUCT_ID: u16 = 0x1614;
-    const OLED_SIZE: Size = Size {
-        width: 128,
-        height: 40,
-    };
-}
-
-impl<K, Cx> DrawTarget<BinaryColor> for KeyboardDevice<K, Cx>
+impl<Cx> DrawTarget<BinaryColor> for KeyboardDevice<Cx>
 where
-    K: KeyboardType,
     Cx: UsbContext,
 {
     type Error = anyhow::Error;
 
     fn draw_pixel(&mut self, item: Pixel<BinaryColor>) -> Result<(), Self::Error> {
         let Pixel(coord, color) = item;
-        let Size { width, height } = K::OLED_SIZE;
+        let Size { width, height } = self.keyboard_info.screen_size;
         let Point { x, y } = coord;
 
         // out of bounds drawing should be a no-op
@@ -234,6 +211,16 @@ where
     }
 
     fn size(&self) -> Size {
-        K::OLED_SIZE
+        self.keyboard_info.screen_size
+    }
+}
+
+impl KeyboardInfo {
+    pub fn matches(&self, desc: &DeviceDescriptor) -> bool {
+        desc.product_id() == self.product_id && desc.vendor_id() == self.vendor_id
+    }
+
+    pub fn screen_area(&self) -> usize {
+        (self.screen_size.width * self.screen_size.height) as usize
     }
 }

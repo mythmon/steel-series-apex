@@ -4,7 +4,15 @@ mod keyboard;
 
 use std::{convert::TryInto, env::args, time::Duration};
 
-use anyhow::{bail, ensure, Context as AnyhowContext, Result};
+use anyhow::{anyhow, bail, ensure, Context as AnyhowContext, Result};
+use embedded_graphics::{
+    drawable::Drawable,
+    fonts::{Font12x16, Font24x32, Text},
+    pixelcolor::BinaryColor,
+    prelude::{Point, Primitive},
+    primitives::{Circle, Rectangle},
+    style::{PrimitiveStyle, TextStyle},
+};
 use keyboard::{ApexProTkl, KeyboardDevice};
 use rusb::{Context, Hotplug, UsbContext};
 use tracing_subscriber::EnvFilter;
@@ -25,8 +33,18 @@ fn main() -> Result<()> {
     let context = rusb::Context::new()?;
     type Keyboard = ApexProTkl;
 
-    let kb = KeyboardDevice::<Keyboard, _>::new(&context)?;
-    kb.checkerboard(4, 4)?;
+    let mut keyboard = KeyboardDevice::<Keyboard, _>::new(&context)?;
+
+    Text::new(
+        hostname::get()?
+            .to_str()
+            .ok_or_else(|| anyhow!("Invalid hostname {:?}", hostname::get()))?,
+        Point::new(0, 0),
+    )
+    .into_styled(TextStyle::new(Font12x16, BinaryColor::On))
+    .draw(&mut keyboard)?;
+
+    keyboard.flush_screen()?;
 
     let watcher = Box::new(KeyboardWatcher);
     let _reg = context.register_callback(
@@ -51,12 +69,21 @@ impl<C: UsbContext> Hotplug<C> for KeyboardWatcher {
         tracing::info!("Device arrived");
 
         let inner = || {
-            // let kb: KeyboardDevice<ApexProTkl, C> =
-            //     device.try_into().context("attaching to device")?;
-
+            // the device is marked as busy during this callback. Ideally we'd send a signal to asynchronously
             let context = rusb::Context::new()?;
-            let kb = KeyboardDevice::<ApexProTkl, _>::new(&context).context("getting kb")?;
-            kb.checkerboard(8, 8).context("drawing image")?;
+            let mut keyboard =
+                KeyboardDevice::<ApexProTkl, _>::new(&context).context("getting kb")?;
+
+            Text::new(
+                hostname::get()?
+                    .to_str()
+                    .ok_or_else(|| anyhow!("Invalid hostname {:?}", hostname::get()))?,
+                Point::new(0, 0),
+            )
+            .into_styled(TextStyle::new(Font12x16, BinaryColor::On))
+            .draw(&mut keyboard)?;
+            keyboard.flush_screen()?;
+
             Ok(())
         };
 

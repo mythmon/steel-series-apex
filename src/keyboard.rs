@@ -3,6 +3,9 @@ use std::{convert::TryFrom, fmt, marker::PhantomData, time::Duration};
 use anyhow::{anyhow, ensure, Context, Result};
 use bitvec::prelude::*;
 use bitvec::{order, prelude::BitVec, slice::BitSlice};
+use embedded_graphics::{
+    drawable::Pixel, geometry::Point, pixelcolor::BinaryColor, prelude::Size, DrawTarget,
+};
 use rusb::{Device, UsbContext};
 use tracing::warn;
 
@@ -12,6 +15,8 @@ where
     C: UsbContext,
 {
     dev: Device<C>,
+    frame_buffer: BitVec<Msb0, u8>,
+    screen_dirty: bool,
     _keyboard_type: PhantomData<K>,
 }
 
@@ -45,10 +50,19 @@ where
             .next()
             .ok_or_else(|| anyhow!("Could not find keyboard"))?;
 
+        let mut frame_buffer = BitVec::with_capacity(Self::screen_area());
+        frame_buffer.resize(Self::screen_area(), false);
+
         Ok(Self {
             dev,
             _keyboard_type: PhantomData::default(),
+            frame_buffer,
+            screen_dirty: true,
         })
+    }
+
+    pub fn screen_area() -> usize {
+        (K::OLED_SIZE.width * K::OLED_SIZE.height) as usize
     }
 
     fn send(&self, cmd: KeyboardCommand, buf: &[u8]) -> Result<()> {
@@ -99,6 +113,14 @@ where
         Ok(())
     }
 
+    pub fn flush_screen(&mut self) -> Result<()> {
+        if self.screen_dirty {
+            self.send_image(&self.frame_buffer)?;
+            self.screen_dirty = false;
+        }
+        Ok(())
+    }
+
     fn send_image(&self, image_data: &BitSlice<Msb0, u8>) -> Result<()> {
         let mut io_buf: BitVec<order::Msb0, u8> = BitVec::new();
         io_buf.resize(8, false);
@@ -107,32 +129,6 @@ where
 
         let buf: &[u8] = io_buf.as_raw_slice();
         self.send(KeyboardCommand::Oled, buf)
-    }
-
-    pub fn checkerboard(&self, x_size: usize, y_size: usize) -> Result<()> {
-        let mut image_data: BitVec<Msb0, u8> = BitVec::new();
-        image_data.resize(K::OLED_SIZE.area(), false);
-
-        let x_size2 = x_size * 2;
-        let y_size2 = y_size * 2;
-
-        for y in 0..K::OLED_SIZE.height {
-            for x in 0..K::OLED_SIZE.width {
-                let p = x + y * K::OLED_SIZE.width;
-                let mut bit = image_data
-                    .get_mut(p)
-                    .ok_or_else(|| anyhow!("Index out of bounds"))?;
-                *bit = (x % x_size2 < x_size) ^ (y % y_size2 < y_size)
-            }
-        }
-
-        self.send_image(&image_data)
-    }
-
-    pub fn blank(&self) -> Result<()> {
-        let mut image_data: BitVec<Msb0, u8> = BitVec::new();
-        image_data.resize(K::OLED_SIZE.area(), false);
-        self.send_image(&image_data)
     }
 }
 
@@ -175,18 +171,6 @@ impl KeyboardCommand {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
-pub struct Size {
-    width: usize,
-    height: usize,
-}
-
-impl Size {
-    fn area(&self) -> usize {
-        self.width * self.height
-    }
-}
-
 pub trait KeyboardType {
     const VENDOR_ID: u16;
     const PRODUCT_ID: u16;
@@ -209,19 +193,47 @@ impl KeyboardType for ApexProTkl {
     };
 }
 
-impl<K: KeyboardType, C: UsbContext> TryFrom<Device<C>> for KeyboardDevice<K, C> {
+impl<K, Cx> DrawTarget<BinaryColor> for KeyboardDevice<K, Cx>
+where
+    K: KeyboardType,
+    Cx: UsbContext,
+{
     type Error = anyhow::Error;
 
-    fn try_from(dev: Device<C>) -> Result<Self, Self::Error> {
-        let desc = dev.device_descriptor()?;
-        anyhow::ensure!(
-            desc.vendor_id() == K::VENDOR_ID && desc.product_id() == K::PRODUCT_ID,
-            "unexpected device"
-        );
+    fn draw_pixel(&mut self, item: Pixel<BinaryColor>) -> Result<(), Self::Error> {
+        let Pixel(coord, color) = item;
+        let Size { width, height } = K::OLED_SIZE;
+        let Point { x, y } = coord;
 
-        Ok(Self {
-            dev,
-            _keyboard_type: PhantomData::default(),
-        })
+        // out of bounds drawing should be a no-op
+        if x < 0 || y < 0 {
+            return Ok(());
+        }
+        let x = x as u32;
+        let y = y as u32;
+        if x >= width || y >= height {
+            return Ok(());
+        }
+
+        let p = x + y * width;
+        let mut bit = self.frame_buffer.get_mut(p as usize).ok_or_else(|| {
+            anyhow!(
+                "Bug: Unexpected index out of bounds {},{} in {}x{}",
+                x,
+                y,
+                width,
+                height
+            )
+        })?;
+        *bit = match color {
+            BinaryColor::On => true,
+            BinaryColor::Off => false,
+        };
+
+        Ok(())
+    }
+
+    fn size(&self) -> Size {
+        K::OLED_SIZE
     }
 }

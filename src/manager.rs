@@ -4,8 +4,8 @@ use embedded_graphics::{
     drawable::Drawable,
     fonts::{Font12x16, Text},
     pixelcolor::BinaryColor,
-    prelude::{Point, Primitive},
-    primitives::Circle,
+    prelude::{Font, Point, Primitive},
+    primitives::{Circle, Line},
     style::{PrimitiveStyle, TextStyle},
 };
 use rusb::{Hotplug, Registration, UsbContext};
@@ -86,13 +86,24 @@ impl KeyboardManager {
     fn draw_screen(&self) -> Result<()> {
         let mut keyboard = KeyboardDevice::new(&self.context, self.keyboard_info)?;
 
-        Text::new(
-            hostname::get()?
-                .to_str()
-                .ok_or_else(|| anyhow!("Invalid hostname {:?}", hostname::get()))?,
-            Point::new(0, 0),
+        let hostname = hostname::get()?;
+        let hostname = hostname
+            .to_str()
+            .ok_or_else(|| anyhow!("Invalid hostname {:?}", hostname::get()))?
+            .to_uppercase();
+
+        Text::new(&hostname, Point::new(0, 0))
+            .into_styled(TextStyle::new(Font12x16, BinaryColor::On))
+            .draw(&mut keyboard)?;
+
+        Line::new(
+            Point::new(0, Font12x16::CHARACTER_SIZE.height as i32),
+            Point::new(
+                Font12x16::str_width(&hostname) as i32,
+                Font12x16::CHARACTER_SIZE.height as i32,
+            ),
         )
-        .into_styled(TextStyle::new(Font12x16, BinaryColor::On))
+        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(&mut keyboard)?;
 
         keyboard.flush_screen()?;
@@ -132,3 +143,17 @@ impl<C: UsbContext> Hotplug<C> for KeyboardWatcher {
         }
     }
 }
+
+trait FontExt: Font {
+    fn str_width(s: &str) -> u32 {
+        let char_widths: u32 = if Self::VARIABLE_WIDTH {
+            s.chars().map(Self::char_width).sum()
+        } else {
+            s.len() as u32 * Self::CHARACTER_SIZE.width
+        };
+        let space_widths = (s.len() as u32 - 1) * Self::CHARACTER_SPACING;
+        char_widths + space_widths
+    }
+}
+
+impl FontExt for Font12x16 {}
